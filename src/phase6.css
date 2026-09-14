@@ -1,0 +1,305 @@
+/* Phase 6 — final car-screen UX hardening */
+
+html {
+  overscroll-behavior: none;
+}
+
+body {
+  overscroll-behavior: none;
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+button,
+a {
+  touch-action: manipulation;
+}
+
+button {
+  -webkit-touch-callout: none;
+}
+
+.control-button {
+  position: relative;
+  min-width: 118px;
+  min-height: 68px;
+  transition:
+    transform .12s ease,
+    background .16s ease,
+    border-color .16s ease,
+    opacity .16s ease;
+}
+
+.control-button:active:not(:disabled) {
+  transform: scale(.985);
+}
+
+.control-button--stop {
+  color: var(--text-soft);
+}
+
+.control-button--armed {
+  border-color: rgba(255,79,101,.42);
+  background: rgba(255,79,101,.12);
+  color: #ffd8de;
+}
+
+.control-button--armed::after {
+  content: "";
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 6px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--live);
+  transform-origin: left center;
+  animation: stopArmTimeout 2.2s linear forwards;
+}
+
+.control-button--screen {
+  color: var(--text-soft);
+  background: rgba(255,255,255,.025);
+}
+
+.control-button__icon--screen {
+  font-size: 18px;
+}
+
+@keyframes stopArmTimeout {
+  from { transform: scaleX(1); opacity: 1; }
+  to { transform: scaleX(0); opacity: .35; }
+}
+
+/* Bigger, easier touch targets on coarse-pointer car displays */
+@media (pointer: coarse) {
+  .start-button {
+    min-height: 96px;
+  }
+
+  .radio-only-button {
+    min-height: 78px;
+  }
+
+  .control-button,
+  .action-button,
+  .fallback-radio-button {
+    min-height: 72px;
+    padding-left: 26px;
+    padding-right: 26px;
+  }
+
+  .memory-repeat-button,
+  .memory-clear-button {
+    min-height: 52px;
+  }
+}
+
+/* Car-like landscape displays */
+@media (orientation: landscape) and (min-width: 820px) {
+  .app-shell {
+    min-height: 100dvh;
+    height: 100dvh;
+  }
+
+  .stage {
+    min-height: 0;
+  }
+
+  .playback-controls {
+    flex-wrap: nowrap;
+  }
+}
+
+/* Very short infotainment browsers, including browser chrome taking space */
+@media (max-height: 600px) and (min-width: 820px) {
+  .topbar {
+    min-height: 52px;
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+
+  .brand__mark {
+    width: 31px;
+    height: 31px;
+    font-size: 19px;
+  }
+
+  .brand {
+    font-size: 17px;
+  }
+
+  .stage {
+    padding: 12px 0;
+  }
+
+  .hero-copy h1 {
+    font-size: clamp(40px, 5vw, 58px);
+  }
+
+  .hero-copy__body {
+    margin: 9px 0 13px;
+    font-size: 15px;
+  }
+
+  .start-button {
+    min-height: 68px;
+    padding-top: 9px;
+    padding-bottom: 9px;
+  }
+
+  .start-button__icon {
+    width: 46px;
+    height: 46px;
+  }
+
+  .start-button__copy strong {
+    font-size: 21px;
+  }
+
+  .radio-only-button {
+    min-height: 56px;
+  }
+
+  .memory-card {
+    min-height: 52px;
+  }
+
+  .local-memory-note {
+    display: none;
+  }
+
+  .player-heading {
+    margin-bottom: 8px;
+  }
+
+  .player-heading h2 {
+    margin-top: 5px;
+    font-size: 32px;
+  }
+
+  .video-frame {
+    max-height: 42vh;
+    border-radius: 17px;
+  }
+
+  .progress-row {
+    margin-top: 9px;
+  }
+
+  .player-footer {
+    margin-top: 10px;
+  }
+
+  .control-button {
+    min-height: 54px;
+    min-width: 104px;
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .radio-orb {
+    width: min(24vw, 220px);
+  }
+
+  .radio-copy h2 {
+    font-size: 42px;
+  }
+
+  .radio-copy .playback-controls {
+    margin-top: 16px;
+  }
+
+  .sequence--compact,
+  .radio-only-note {
+    margin-top: 14px;
+  }
+
+  .footer {
+    min-height: 38px;
+    padding-top: 7px;
+    padding-bottom: 7px;
+  }
+}
+
+/* Extremely short embedded-browser viewport */
+@media (max-height: 480px) and (min-width: 820px) {
+  .topbar__status {
+    font-size: 11px;
+  }
+
+  .footer {
+    display: none;
+  }
+
+  .stage {
+    padding: 7px 0;
+  }
+
+  .hero-copy__body {
+    display: none;
+  }
+
+  .memory-card {
+    display: none;
+  }
+
+  .ready-layout {
+    gap: 28px;
+  }
+
+  .video-frame {
+    max-height: 39vh;
+  }
+
+  .player-heading p,
+  .next-up span {
+    display: none;
+  }
+
+  .sequence--compact {
+    display: none;
+  }
+}
+
+/* Fullscreen: use every pixel and remove nonessential chrome */
+:fullscreen .topbar,
+:-webkit-full-screen .topbar {
+  min-height: 54px;
+  padding-top: 9px;
+  padding-bottom: 9px;
+}
+
+:fullscreen .footer,
+:-webkit-full-screen .footer {
+  display: none;
+}
+
+:fullscreen .app-shell,
+:-webkit-full-screen .app-shell {
+  min-height: 100vh;
+  height: 100vh;
+}
+
+:fullscreen .stage,
+:-webkit-full-screen .stage {
+  padding-top: 16px;
+  padding-bottom: 16px;
+}
+
+/* Avoid hover-only visual behavior on touch screens */
+@media (hover: none) {
+  .start-button:hover,
+  .radio-only-button:hover,
+  .memory-repeat-button:hover,
+  .memory-clear-button:hover {
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .control-button--armed::after {
+    animation: none;
+  }
+}
