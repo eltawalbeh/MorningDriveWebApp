@@ -4,6 +4,8 @@ import SequencePreview from './components/SequencePreview'
 import StatusBadge from './components/StatusBadge'
 import YouTubePlayerView from './components/YouTubePlayer'
 import { MEDIA } from './config/media'
+import useNetworkStatus from './hooks/useNetworkStatus'
+import useWakeLock from './hooks/useWakeLock'
 
 type AppState =
   | 'ready'
@@ -17,6 +19,9 @@ type AppState =
   | 'error'
 
 type ErrorType = 'video' | 'radio' | 'network' | null
+type SessionMode = 'sequence' | 'radio-only'
+
+const RADIO_RETRY_DELAYS = [1500, 3000, 5000]
 
 function formatTime(seconds: number) {
   if (!Number.isFinite(seconds) || seconds <= 0) return '0:00'
@@ -28,20 +33,45 @@ function formatTime(seconds: number) {
 export default function App() {
   const [state, setState] = useState<AppState>('ready')
   const [errorType, setErrorType] = useState<ErrorType>(null)
+  const [sessionMode, setSessionMode] = useState<SessionMode>('sequence')
   const [startToken, setStartToken] = useState(0)
   const [videoTime, setVideoTime] = useState({ current: 0, duration: 0 })
   const [radioNeedsTap, setRadioNeedsTap] = useState(false)
+  const [radioReconnectAttempt, setRadioReconnectAttempt] = useState(0)
+  const radioReconnectRef = useRef(0)
+
+  const online = useNetworkStatus()
+  const isActive = state !== 'ready' && state !== 'error'
+  const { supported: wakeLockSupported, locked: wakeLockActive } = useWakeLock(isActive)
 
   const playerRef = useRef<YouTubePlayer | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const radioAttemptRef = useRef(0)
+  const reconnectTimerRef = useRef<number | null>(null)
+  const manualPauseRef = useRef(false)
+
+  const clearReconnectTimer = useCallback(() => {
+    if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current)
+    reconnectTimerRef.current = null
+  }, [])
+
+  const cleanupAudioListeners = useCallback(() => {
+    const audio = audioRef.current
+    if (!audio) return
+    audio.onplaying = null
+    audio.onerror = null
+    audio.onstalled = null
+    audio.onwaiting = null
+  }, [])
 
   const stopAll = useCallback(() => {
-    try {
-      playerRef.current?.stopVideo()
-    } catch {}
+    clearReconnectTimer()
+    radioAttemptRef.current += 1
+    manualPauseRef.current = false
+    try { playerRef.current?.stopVideo() } catch {}
 
     if (audioRef.current) {
+      cleanupAudioListeners()
       audioRef.current.pause()
       audioRef.current.removeAttribute('src')
       audioRef.current.load()
@@ -49,9 +79,11 @@ export default function App() {
 
     setVideoTime({ current: 0, duration: 0 })
     setRadioNeedsTap(false)
+    radioReconnectRef.current = 0
+    setRadioReconnectAttempt(0)
     setErrorType(null)
     setState('ready')
-  }, [])
+  }, [clearReconnectTimer, cleanupAudioListeners])
 
   const prepareRadio = useCallback(() => {
     if (!audioRef.current) {
@@ -59,46 +91,65 @@ export default function App() {
       audio.preload = 'none'
       audioRef.current = audio
     }
-
-    const audio = audioRef.current
-    audio.src = MEDIA.radio.streamUrl
-    return audio
+    return audioRef.current
   }, [])
 
-  const playRadio = useCallback(async () => {
+  const playRadio = useCallback(async (isReconnect = false) => {
+    clearReconnectTimer()
     const attempt = ++radioAttemptRef.current
+    manualPauseRef.current = false
     setRadioNeedsTap(false)
     setErrorType(null)
     setState('radio-loading')
 
     try {
       const audio = prepareRadio()
+      cleanupAudioListeners()
 
-      const timeout = window.setTimeout(() => {
-        if (radioAttemptRef.current === attempt && audio.paused) {
+      if (!audio.src || !isReconnect) audio.src = MEDIA.radio.streamUrl
+      if (isReconnect) {
+        audio.pause()
+        audio.load()
+      }
+
+      const failAfterTimeout = window.setTimeout(() => {
+        if (radioAttemptRef.current === attempt && audio.paused && !manualPauseRef.current) {
           setErrorType('radio')
           setState('error')
         }
       }, 10000)
 
-      const onPlaying = () => {
-        window.clearTimeout(timeout)
+      const scheduleReconnect = () => {
+        if (manualPauseRef.current || !navigator.onLine || radioAttemptRef.current !== attempt) return
+        const currentAttempt = Math.min(radioReconnectRef.current, RADIO_RETRY_DELAYS.length - 1)
+        if (radioReconnectRef.current >= RADIO_RETRY_DELAYS.length) {
+          window.clearTimeout(failAfterTimeout)
+          setErrorType('radio')
+          setState('error')
+          return
+        }
+        radioReconnectRef.current += 1
+        setRadioReconnectAttempt(radioReconnectRef.current)
+        setState('radio-loading')
+        reconnectTimerRef.current = window.setTimeout(() => {
+          void playRadio(true)
+        }, RADIO_RETRY_DELAYS[currentAttempt])
+      }
+
+      audio.onplaying = () => {
+        window.clearTimeout(failAfterTimeout)
         if (radioAttemptRef.current === attempt) {
+          radioReconnectRef.current = 0
+          setRadioReconnectAttempt(0)
           setRadioNeedsTap(false)
           setState('radio-playing')
         }
       }
-
-      const onError = () => {
-        window.clearTimeout(timeout)
-        if (radioAttemptRef.current === attempt) {
-          setErrorType('radio')
-          setState('error')
-        }
+      audio.onerror = scheduleReconnect
+      audio.onstalled = scheduleReconnect
+      audio.onwaiting = () => {
+        if (!manualPauseRef.current) setState('radio-loading')
       }
-
-      audio.addEventListener('playing', onPlaying, { once: true })
-      audio.addEventListener('error', onError, { once: true })
 
       await audio.play()
     } catch (error) {
@@ -108,25 +159,37 @@ export default function App() {
         setState('radio-paused')
         return
       }
-
+      if (!navigator.onLine) {
+        setErrorType('network')
+        setState('error')
+        return
+      }
       setErrorType('radio')
       setState('error')
     }
-  }, [prepareRadio])
+  }, [clearReconnectTimer, cleanupAudioListeners, prepareRadio])
 
   const beginMorningDrive = useCallback(() => {
+    setSessionMode('sequence')
     setErrorType(null)
     setRadioNeedsTap(false)
+    radioReconnectRef.current = 0
+    setRadioReconnectAttempt(0)
     setVideoTime({ current: 0, duration: 0 })
     setState('video-loading')
     setStartToken(token => token + 1)
   }, [])
 
+  const beginRadioOnly = useCallback(() => {
+    setSessionMode('radio-only')
+    radioReconnectRef.current = 0
+    setRadioReconnectAttempt(0)
+    void playRadio()
+  }, [playRadio])
+
   const handleVideoEnded = useCallback(() => {
     setState('transitioning')
-    window.setTimeout(() => {
-      playRadio()
-    }, 450)
+    window.setTimeout(() => { void playRadio() }, 450)
   }, [playRadio])
 
   const handleVideoError = useCallback(() => {
@@ -140,59 +203,63 @@ export default function App() {
       setState('video-paused')
       return
     }
-
     if (state === 'video-paused') {
       playerRef.current?.playVideo()
       setState('video-playing')
       return
     }
-
-    if (state === 'radio-playing') {
+    if (state === 'radio-playing' || state === 'radio-loading') {
+      clearReconnectTimer()
+      manualPauseRef.current = true
       audioRef.current?.pause()
       setState('radio-paused')
       return
     }
-
-    if (state === 'radio-paused') {
-      playRadio()
-    }
-  }, [state, playRadio])
+    if (state === 'radio-paused') void playRadio()
+  }, [state, clearReconnectTimer, playRadio])
 
   useEffect(() => {
-    const handleOffline = () => {
-      if (state !== 'ready') {
-        setErrorType('network')
-        setState('error')
-      }
+    if (!online && state !== 'ready') {
+      clearReconnectTimer()
+      setErrorType('network')
+      setState('error')
     }
+  }, [online, state, clearReconnectTimer])
 
-    window.addEventListener('offline', handleOffline)
-    return () => window.removeEventListener('offline', handleOffline)
+  useEffect(() => {
+    document.title = state === 'radio-playing'
+      ? 'Ain FM • Morning Drive'
+      : state.startsWith('video')
+        ? 'Morning Azkar • Morning Drive'
+        : 'Morning Drive'
   }, [state])
 
-  useEffect(() => {
-    return () => {
-      try {
-        playerRef.current?.destroy()
-      } catch {}
-      audioRef.current?.pause()
-    }
-  }, [])
+  useEffect(() => () => {
+    clearReconnectTimer()
+    try { playerRef.current?.destroy() } catch {}
+    audioRef.current?.pause()
+  }, [clearReconnectTimer])
 
   const isVideoState = state.startsWith('video')
   const isRadioState = state.startsWith('radio')
-  const hasCompletedVideo = isRadioState || state === 'transitioning'
+  const completedVideo = sessionMode === 'sequence' && isRadioState
   const progress = videoTime.duration > 0 ? Math.min(100, (videoTime.current / videoTime.duration) * 100) : 0
+  const radioStatus = state === 'radio-loading'
+    ? radioReconnectAttempt > 0 ? `Reconnecting… ${radioReconnectAttempt}/${RADIO_RETRY_DELAYS.length}` : 'Connecting…'
+    : radioNeedsTap ? 'Tap once to start the live stream.' : 'Live radio for the rest of your drive.'
 
   const retryError = () => {
     if (errorType === 'video') beginMorningDrive()
-    else if (errorType === 'radio' || errorType === 'network') playRadio()
+    else if (errorType === 'radio' || errorType === 'network') void playRadio()
   }
 
   return (
     <main className="app-shell">
       <div className="ambient ambient--one" />
       <div className="ambient ambient--two" />
+      <div className="sr-only" aria-live="polite">
+        {state === 'radio-playing' ? 'Ain FM is playing' : state.replaceAll('-', ' ')}
+      </div>
 
       <header className="topbar">
         <a className="brand" href="#" onClick={(event) => { event.preventDefault(); stopAll() }}>
@@ -200,9 +267,11 @@ export default function App() {
           <span>Morning Drive</span>
         </a>
 
-        <div className="topbar__status">
+        <div className={`topbar__status ${online ? '' : 'topbar__status--offline'}`}>
           <span className="connection-dot" />
-          Ready for the road
+          {online ? 'Connected' : 'Offline'}
+          {isActive && wakeLockSupported && <span className="status-separator">•</span>}
+          {isActive && wakeLockSupported && <span>{wakeLockActive ? 'Screen awake' : 'Screen wake unavailable'}</span>}
         </div>
       </header>
 
@@ -211,22 +280,22 @@ export default function App() {
           <div className="ready-layout">
             <div className="hero-copy">
               <p className="eyebrow">ONE TAP. YOUR MORNING.</p>
-              <h1>
-                Start the drive.<br />
-                <span>We’ll handle the rest.</span>
-              </h1>
-              <p className="hero-copy__body">
-                Morning Azkar first, then Ain FM live — automatically.
-              </p>
+              <h1>Start the drive.<br /><span>We’ll handle the rest.</span></h1>
+              <p className="hero-copy__body">Morning Azkar first, then Ain FM live — automatically.</p>
 
-              <button className="start-button" onClick={beginMorningDrive}>
-                <span className="start-button__icon" aria-hidden="true">▶</span>
-                <span className="start-button__copy">
-                  <strong>Morning Drive</strong>
-                  <small>Tap once to begin</small>
-                </span>
-                <span className="start-button__arrow" aria-hidden="true">→</span>
-              </button>
+              <div className="home-actions">
+                <button className="start-button" onClick={beginMorningDrive}>
+                  <span className="start-button__icon" aria-hidden="true">▶</span>
+                  <span className="start-button__copy"><strong>Morning Drive</strong><small>Azkar → Ain FM</small></span>
+                  <span className="start-button__arrow" aria-hidden="true">→</span>
+                </button>
+
+                <button className="radio-only-button" onClick={beginRadioOnly}>
+                  <span className="radio-only-button__live"><i /> LIVE</span>
+                  <span><strong>Radio Only</strong><small>Go straight to Ain FM</small></span>
+                  <span aria-hidden="true">→</span>
+                </button>
+              </div>
             </div>
 
             <SequencePreview />
@@ -257,23 +326,13 @@ export default function App() {
 
             <div className="progress-row" aria-label="Video progress">
               <span>{formatTime(videoTime.current)}</span>
-              <div className="progress-track">
-                <div className="progress-fill" style={{ width: `${progress}%` }} />
-              </div>
+              <div className="progress-track"><div className="progress-fill" style={{ width: `${progress}%` }} /></div>
               <span>{formatTime(videoTime.duration)}</span>
             </div>
 
             <div className="player-footer">
-              <PlaybackControls
-                isPaused={state === 'video-paused'}
-                onToggle={togglePlayback}
-                onStop={stopAll}
-                disabled={state === 'video-loading'}
-              />
-              <div className="next-up">
-                <span>Next automatically</span>
-                <strong>Ain FM <i /> LIVE</strong>
-              </div>
+              <PlaybackControls isPaused={state === 'video-paused'} onToggle={togglePlayback} onStop={stopAll} disabled={state === 'video-loading'} />
+              <div className="next-up"><span>Next automatically</span><strong>Ain FM <i /> LIVE</strong></div>
             </div>
           </div>
         )}
@@ -290,36 +349,29 @@ export default function App() {
 
         {isRadioState && (
           <div className="radio-layout">
-            <div className="radio-orb" aria-hidden="true">
-              <div className="radio-orb__inner">
-                <span>AIN</span>
-                <small>FM</small>
-              </div>
-              <i className="radio-wave radio-wave--1" />
-              <i className="radio-wave radio-wave--2" />
-              <i className="radio-wave radio-wave--3" />
+            <div className={`radio-orb ${state === 'radio-loading' ? 'radio-orb--loading' : ''}`} aria-hidden="true">
+              <div className="radio-orb__inner"><span>AIN</span><small>FM</small></div>
+              <i className="radio-wave radio-wave--1" /><i className="radio-wave radio-wave--2" /><i className="radio-wave radio-wave--3" />
             </div>
 
             <div className="radio-copy">
-              <StatusBadge label="LIVE" tone="live" />
-              <p className="radio-copy__eyebrow">NOW PLAYING</p>
+              <StatusBadge label={state === 'radio-loading' ? 'CONNECTING' : state === 'radio-paused' ? 'PAUSED' : 'LIVE'} tone={state === 'radio-playing' ? 'live' : 'neutral'} />
+              <p className="radio-copy__eyebrow">{sessionMode === 'radio-only' ? 'RADIO ONLY' : 'NOW PLAYING'}</p>
               <h2>Ain FM</h2>
-              <p>{radioNeedsTap ? 'Your browser needs one more tap to start the live stream.' : 'Live radio for the rest of your drive.'}</p>
+              <p>{radioStatus}</p>
 
-              {radioNeedsTap && (
-                <button className="fallback-radio-button" onClick={playRadio}>
-                  ▶ Start Ain FM
-                </button>
-              )}
+              {radioNeedsTap && <button className="fallback-radio-button" onClick={() => void playRadio()}>▶ Start Ain FM</button>}
 
               <PlaybackControls
                 isPaused={state === 'radio-paused'}
                 onToggle={togglePlayback}
                 onStop={stopAll}
-                disabled={state === 'radio-loading'}
+                disabled={state === 'radio-loading' && !radioReconnectAttempt}
               />
 
-              <SequencePreview compact completedVideo activeStep="radio" />
+              {sessionMode === 'sequence'
+                ? <SequencePreview compact completedVideo={completedVideo} activeStep="radio" />
+                : <div className="radio-only-note"><span className="live-copy"><i /> LIVE</span><strong>Direct to Ain FM</strong></div>}
             </div>
           </div>
         )}
@@ -327,21 +379,17 @@ export default function App() {
         {state === 'error' && (
           <div className="error-state">
             <div className="error-state__icon">!</div>
-            <StatusBadge label="CONNECTION ISSUE" />
+            <StatusBadge label={errorType === 'network' ? 'OFFLINE' : 'CONNECTION ISSUE'} />
             <h2>
               {errorType === 'video' && 'Morning video could not be played.'}
               {errorType === 'radio' && 'Ain FM could not be started.'}
               {errorType === 'network' && 'Connection interrupted.'}
             </h2>
-            <p>
-              Check the connection and try again. You’ll stay inside Morning Drive.
-            </p>
+            <p>{errorType === 'network' ? 'Morning Drive will be ready to reconnect as soon as the connection returns.' : 'Check the connection and try again. You’ll stay inside Morning Drive.'}</p>
 
             <div className="error-actions">
-              <button className="action-button action-button--primary" onClick={retryError}>Retry</button>
-              {errorType === 'video' && (
-                <button className="action-button" onClick={playRadio}>Skip to Radio</button>
-              )}
+              <button className="action-button action-button--primary" onClick={retryError} disabled={!online}>Retry</button>
+              {errorType === 'video' && <button className="action-button" onClick={beginRadioOnly}>Skip to Radio</button>}
               <button className="action-button action-button--ghost" onClick={stopAll}>Back to Start</button>
             </div>
           </div>
@@ -349,9 +397,7 @@ export default function App() {
       </section>
 
       <footer className="footer">
-        <span>Morning Azkar</span>
-        <i />
-        <span>Ain FM</span>
+        <span>Morning Azkar</span><i /><span>Ain FM</span>
         <small>Built for a simple, distraction-free drive.</small>
       </footer>
     </main>
