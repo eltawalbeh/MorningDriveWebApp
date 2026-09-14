@@ -6,6 +6,8 @@ import YouTubePlayerView from './components/YouTubePlayer'
 import { MEDIA } from './config/media'
 import useNetworkStatus from './hooks/useNetworkStatus'
 import useWakeLock from './hooks/useWakeLock'
+import useLocalPreferences, { type StoredMode } from './hooks/useLocalPreferences'
+import './phase5.css'
 
 type AppState =
   | 'ready'
@@ -30,6 +32,32 @@ function formatTime(seconds: number) {
   return `${minutes}:${remaining.toString().padStart(2, '0')}`
 }
 
+function formatLastUsed(value: string | null) {
+  if (!value) return null
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return null
+
+  const now = new Date()
+  const sameDay =
+    now.getFullYear() === date.getFullYear() &&
+    now.getMonth() === date.getMonth() &&
+    now.getDate() === date.getDate()
+
+  const time = date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+  if (sameDay) return `Today at ${time}`
+
+  const yesterday = new Date(now)
+  yesterday.setDate(now.getDate() - 1)
+  const wasYesterday =
+    yesterday.getFullYear() === date.getFullYear() &&
+    yesterday.getMonth() === date.getMonth() &&
+    yesterday.getDate() === date.getDate()
+
+  if (wasYesterday) return `Yesterday at ${time}`
+
+  return date.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ` at ${time}`
+}
+
 export default function App() {
   const [state, setState] = useState<AppState>('ready')
   const [errorType, setErrorType] = useState<ErrorType>(null)
@@ -43,6 +71,7 @@ export default function App() {
   const online = useNetworkStatus()
   const isActive = state !== 'ready' && state !== 'error'
   const { supported: wakeLockSupported, locked: wakeLockActive } = useWakeLock(isActive)
+  const { preferences, recordStart, clearHistory } = useLocalPreferences()
 
   const playerRef = useRef<YouTubePlayer | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -169,7 +198,8 @@ export default function App() {
     }
   }, [clearReconnectTimer, cleanupAudioListeners, prepareRadio])
 
-  const beginMorningDrive = useCallback(() => {
+  const beginMorningDrive = useCallback((remember = true) => {
+    if (remember) recordStart('sequence')
     setSessionMode('sequence')
     setErrorType(null)
     setRadioNeedsTap(false)
@@ -178,14 +208,20 @@ export default function App() {
     setVideoTime({ current: 0, duration: 0 })
     setState('video-loading')
     setStartToken(token => token + 1)
-  }, [])
+  }, [recordStart])
 
-  const beginRadioOnly = useCallback(() => {
+  const beginRadioOnly = useCallback((remember = true) => {
+    if (remember) recordStart('radio-only')
     setSessionMode('radio-only')
     radioReconnectRef.current = 0
     setRadioReconnectAttempt(0)
     void playRadio()
-  }, [playRadio])
+  }, [playRadio, recordStart])
+
+  const startStoredMode = useCallback((mode: StoredMode) => {
+    if (mode === 'radio-only') beginRadioOnly()
+    else beginMorningDrive()
+  }, [beginMorningDrive, beginRadioOnly])
 
   const handleVideoEnded = useCallback(() => {
     setState('transitioning')
@@ -248,8 +284,11 @@ export default function App() {
     ? radioReconnectAttempt > 0 ? `Reconnecting… ${radioReconnectAttempt}/${RADIO_RETRY_DELAYS.length}` : 'Connecting…'
     : radioNeedsTap ? 'Tap once to start the live stream.' : 'Live radio for the rest of your drive.'
 
+  const lastUsed = formatLastUsed(preferences.lastStartedAt)
+  const lastModeLabel = preferences.lastMode === 'radio-only' ? 'Radio Only' : 'Morning Drive'
+
   const retryError = () => {
-    if (errorType === 'video') beginMorningDrive()
+    if (errorType === 'video') beginMorningDrive(false)
     else if (errorType === 'radio' || errorType === 'network') void playRadio()
   }
 
@@ -284,21 +323,55 @@ export default function App() {
               <p className="hero-copy__body">Morning Azkar first, then Ain FM live — automatically.</p>
 
               <div className="home-actions">
-                <button className="start-button" onClick={beginMorningDrive}>
+                <button className="start-button" onClick={() => beginMorningDrive()}>
                   <span className="start-button__icon" aria-hidden="true">▶</span>
                   <span className="start-button__copy"><strong>Morning Drive</strong><small>Azkar → Ain FM</small></span>
                   <span className="start-button__arrow" aria-hidden="true">→</span>
                 </button>
 
-                <button className="radio-only-button" onClick={beginRadioOnly}>
+                <button className="radio-only-button" onClick={() => beginRadioOnly()}>
                   <span className="radio-only-button__live"><i /> LIVE</span>
                   <span><strong>Radio Only</strong><small>Go straight to Ain FM</small></span>
                   <span aria-hidden="true">→</span>
                 </button>
+
+                {preferences.lastMode && (
+                  <div className="memory-card">
+                    <div className="memory-card__copy">
+                      <span className="memory-card__label">LAST USED</span>
+                      <strong>{lastModeLabel}</strong>
+                      <small>{lastUsed || 'Saved on this browser'}</small>
+                    </div>
+
+                    <div className="memory-card__actions">
+                      <button
+                        className="memory-repeat-button"
+                        onClick={() => startStoredMode(preferences.lastMode!)}
+                      >
+                        Repeat
+                        <span aria-hidden="true">→</span>
+                      </button>
+                      <button className="memory-clear-button" onClick={clearHistory}>
+                        Forget
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
-            <SequencePreview />
+            <div className="home-side">
+              <SequencePreview />
+              {preferences.startCount > 0 && (
+                <div className="local-memory-note">
+                  <span className="local-memory-note__dot" />
+                  <div>
+                    <strong>Remembered on this screen</strong>
+                    <span>{preferences.startCount} {preferences.startCount === 1 ? 'start' : 'starts'} saved locally</span>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -389,7 +462,7 @@ export default function App() {
 
             <div className="error-actions">
               <button className="action-button action-button--primary" onClick={retryError} disabled={!online}>Retry</button>
-              {errorType === 'video' && <button className="action-button" onClick={beginRadioOnly}>Skip to Radio</button>}
+              {errorType === 'video' && <button className="action-button" onClick={() => beginRadioOnly(false)}>Skip to Radio</button>}
               <button className="action-button action-button--ghost" onClick={stopAll}>Back to Start</button>
             </div>
           </div>
