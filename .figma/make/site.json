@@ -1,0 +1,8 @@
+{
+  "title": "Morning Drive - BYD",
+  "description": "A responsive, touch-friendly app designed for car displays to offer a clean, dark interface for easy morning drive access with simple controls.",
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": true
+  }
+}
