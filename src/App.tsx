@@ -7,7 +7,7 @@ import { MEDIA } from './config/media'
 import useNetworkStatus from './hooks/useNetworkStatus'
 import useWakeLock from './hooks/useWakeLock'
 import useLocalPreferences, { type StoredMode } from './hooks/useLocalPreferences'
-import './phase5.css'
+import './phase6.css'
 
 type AppState =
   | 'ready'
