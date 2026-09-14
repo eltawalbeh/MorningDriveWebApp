@@ -2,7 +2,7 @@ const CACHE_NAME = 'morning-drive-v4'
 const APP_SHELL = [
   '/',
   '/offline.html',
-  '/manifest.webmanifest',
+  '/manifest.json',
   '/icons/icon-192.png',
   '/icons/icon-512.png',
   '/icons/maskable-512.png',
